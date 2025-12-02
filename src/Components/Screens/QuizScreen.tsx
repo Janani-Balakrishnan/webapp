@@ -1,0 +1,193 @@
+// src/components/screens/QuizScreen.tsx
+import React, { useState, useEffect } from 'react';
+import { 
+  QuizListItem, 
+  QuizDetail, 
+  ProcessedQuestion,
+  QuizResult, 
+  ViewState,
+  UserAnswer 
+} from '../../types/quiz.types';
+import { 
+  fetchQuizzes, 
+  fetchQuizDetail, 
+  processQuestions,
+  submitQuizAttempt 
+} from '../../services/quizapi';
+import { TEST_USER_ID, GRADIENT_BG } from '../../constants/quiz.constants';
+import { QuizList } from '../Quiz/QuizList';
+import { QuizPlayer } from '../Quiz/QuizPlayer';
+import { QuizScoreScreen } from '../Quiz/QuizScoreScreen';
+
+const QuizScreen: React.FC = () => {
+  const [view, setView] = useState<ViewState>(ViewState.LOADING);
+  const [quizzes, setQuizzes] = useState<QuizListItem[]>([]);
+  const [activeQuiz, setActiveQuiz] = useState<QuizDetail | null>(null);
+  const [processedQuestions, setProcessedQuestions] = useState<ProcessedQuestion[]>([]);
+  const [lastResult, setLastResult] = useState<QuizResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+
+  useEffect(() => {
+    loadQuizzes();
+  }, []);
+
+  const loadQuizzes = async () => {
+    setView(ViewState.LOADING);
+    setError(null);
+    try {
+      // NEW: No user_id needed - fetches global quizzes
+      const data = await fetchQuizzes();
+      
+      // Check if we are receiving the mock data
+      if (Array.isArray(data) && data.length > 0 && data[0].quiz_id.startsWith('mock-')) {
+        setIsDemoMode(true);
+      } else {
+        setIsDemoMode(false);
+      }
+
+      setQuizzes(data || []);
+      setView(ViewState.LIST);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to load quizzes. Please ensure the backend is running.");
+      setView(ViewState.ERROR);
+    }
+  };
+
+  const handleStartQuiz = async (quizId: string) => {
+    setView(ViewState.LOADING);
+    try {
+      // NEW: Fetch quiz with questions from backend
+      const quiz = await fetchQuizDetail(quizId);
+      
+      if (!quiz) {
+        throw new Error('Quiz not found');
+      }
+
+      if (!quiz.questions || quiz.questions.length === 0) {
+        setError('This quiz has no questions available.');
+        setView(ViewState.ERROR);
+        return;
+      }
+
+      setActiveQuiz(quiz);
+      
+      // NEW: Process questions (shuffle options, normalize format)
+      const processed = processQuestions(quiz.questions);
+      setProcessedQuestions(processed);
+      
+      setView(ViewState.PLAYING);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to load quiz. Please try again.');
+      setView(ViewState.ERROR);
+    }
+  };
+
+  const handleQuizComplete = async (
+    result: QuizResult,
+    userAnswers: UserAnswer[]
+  ) => {
+    if (!activeQuiz) return;
+
+    // NEW: Submit quiz attempt to backend
+    try {
+      await submitQuizAttempt({
+        user_id: TEST_USER_ID,
+        quiz_id: activeQuiz.quiz_id,
+        score: result.correctAnswers,
+        total_questions: result.totalQuestions,
+        score_percentage: result.scorePercentage,
+        time_taken: result.timeSpentSeconds,
+        answers: userAnswers,
+      });
+      console.log('✅ Quiz attempt submitted successfully');
+    } catch (err) {
+      console.error('⚠️ Failed to submit quiz attempt:', err);
+      // Continue to show results even if submission fails
+    }
+
+    setLastResult(result);
+    setView(ViewState.RESULT);
+  };
+
+  const handleRetry = async () => {
+    if (activeQuiz) {
+      // Re-shuffle questions for retry
+      const processed = processQuestions(activeQuiz.questions);
+      setProcessedQuestions(processed);
+      setLastResult(null);
+      setView(ViewState.PLAYING);
+    }
+  };
+
+  const handleBackToList = () => {
+    setActiveQuiz(null);
+    setProcessedQuestions([]);
+    setLastResult(null);
+    loadQuizzes();
+  };
+
+  return (
+    <div className={`min-h-screen ${GRADIENT_BG} py-8 px-4`}>
+      <div className="max-w-6xl mx-auto">
+        {isDemoMode && (
+          <div className="mb-4 p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
+            <p className="font-semibold">Demo Mode Active</p>
+            <p className="text-sm">Using sample data. Backend connection unavailable.</p>
+          </div>
+        )}
+
+        {view === ViewState.LOADING && (
+          <div className="flex items-center justify-center h-64">
+            <div className="text-center text-gray-700">
+              <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-cyan-500 mx-auto mb-4"></div>
+              <p className="text-xl font-semibold">Loading quizzes...</p>
+            </div>
+          </div>
+        )}
+
+        {view === ViewState.ERROR && (
+          <div className="max-w-2xl mx-auto">
+            <div className="bg-white rounded-lg shadow-xl p-8 text-center">
+              <div className="text-red-500 text-6xl mb-4">⚠️</div>
+              <h2 className="text-2xl font-bold text-gray-800 mb-4">Error Loading Quizzes</h2>
+              <p className="text-gray-600 mb-6">{error}</p>
+              <button
+                onClick={loadQuizzes}
+                className="px-6 py-3 bg-cyan-500 text-white font-semibold rounded-lg hover:bg-cyan-600 transition-colors"
+              >
+                Try Again
+              </button>
+            </div>
+          </div>
+        )}
+
+        {view === ViewState.LIST && (
+          <QuizList quizzes={quizzes} onStartQuiz={handleStartQuiz} />
+        )}
+
+        {view === ViewState.PLAYING && activeQuiz && processedQuestions.length > 0 && (
+          <QuizPlayer
+            quiz={activeQuiz}
+            questions={processedQuestions}
+            onComplete={handleQuizComplete}
+            onExit={handleBackToList}
+          />
+        )}
+
+        {view === ViewState.RESULT && lastResult && activeQuiz && (
+          <QuizScoreScreen
+            result={lastResult}
+            quizTitle={activeQuiz.title}
+            onRetry={handleRetry}
+            onHome={handleBackToList}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default QuizScreen;
